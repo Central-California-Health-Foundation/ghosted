@@ -60,6 +60,57 @@ age_hb "45 days ago"
 G check
 assert "$(stage)" 0 "explicit ack outranks stale heartbeat dirs"
 
+echo "== delivery channels fire on stage transitions"
+mkdir -p "$GHOSTED_DIR/channels"
+cat >"$GHOSTED_DIR/channels/recorder.sh" <<'CH'
+#!/usr/bin/env bash
+echo "stage=$1 age=$2" >>"$TEST_LOG"
+CH
+chmod +x "$GHOSTED_DIR/channels/recorder.sh"
+export CHANNELS=recorder TEST_LOG="$PWD/.test/chan.log"
+rm -f "$GHOSTED_DIR/heartbeat" # the ack above left a fresh heartbeat; drop it
+age_hb "31 days ago"
+G check
+assert "$(head -n1 "$TEST_LOG")" "stage=1 age=31" "channel fires at stage 1 with stage+age"
+age_hb now
+G check
+age_hb "38 days ago"
+G check
+assert "$(tail -n1 "$TEST_LOG")" "stage=2 age=38" "channel fires at stage 2"
+assert "$(grep -c 'NOTIFY channel=recorder ok' "$GHOSTED_DIR/alert.log")" 2 "both deliveries logged"
+
+echo "== missing channel script warns but check succeeds"
+export CHANNELS=ghostchannel
+echo 0 >"$GHOSTED_DIR/stage" # reset stage without touching heartbeat
+age_hb "31 days ago"
+G check
+assert "$(stage)" 1 "check still advances stage with broken channel config"
+assert "$(grep -c 'WARN channel=ghostchannel' "$GHOSTED_DIR/alert.log")" 1 "missing channel script logged as WARN"
+
+echo "== agent channel hands witness prompt to AGENT_CMD"
+export CHANNELS=agent AGENT_CMD="cat > $PWD/.test/agent_in.txt"
+age_hb now
+G check
+age_hb "38 days ago"
+G check
+assert "$(grep -c 'compose only' "$PWD/.test/agent_in.txt")" 1 "agent channel sends witness instructions"
+assert "$(grep -c 'CONTACT STAGE' "$PWD/.test/agent_in.txt")" 1 "agent channel includes the alert"
+unset CHANNELS AGENT_CMD TEST_LOG
+
+echo "== legacy notify.sh hook still runs"
+rm -rf "$GHOSTED_DIR"
+mkdir -p "$GHOSTED_DIR"
+cat >"$GHOSTED_DIR/notify.sh" <<'HK'
+#!/usr/bin/env bash
+echo "legacy stage=$1" >>"$TEST_LOG2"
+HK
+chmod +x "$GHOSTED_DIR/notify.sh"
+export TEST_LOG2="$PWD/.test/legacy.log"
+age_hb "31 days ago"
+G check
+assert "$(cat "$TEST_LOG2")" "legacy stage=1" "v0.1 notify.sh hook still fires"
+unset TEST_LOG2
+
 echo "== empty heartbeat sources -> INIT"
 rm -rf "$GHOSTED_DIR" "$HEARTBEAT_PATHS"
 mkdir -p "$HEARTBEAT_PATHS"

@@ -27,3 +27,19 @@ Session-start checks:
 
 That last line matters: the agent that witnesses the switch must never hold
 the match that resets it.
+
+## Option B: be the channel
+
+Instead of (or in addition to) checking at session start, an agent can be a
+*delivery target*. The `agent` channel pipes a witness prompt — the alert,
+your emergency-note draft, and compose-only rules — into any command's stdin:
+
+```sh
+# ~/.config/ghosted/config
+CHANNELS="agent"
+AGENT_CMD="ssh witness@otherbox my-agent --prompt-stdin"
+```
+
+The prompt tells the receiving agent exactly what it may and may not do:
+compose the contact message, never send it, never touch switch state. Same
+rule on both ends — dumb shell decides, agents compose.

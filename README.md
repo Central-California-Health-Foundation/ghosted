@@ -48,8 +48,8 @@ cloud account, no agent, no daemon of its own beyond a systemd timer.
    plain bash: no network, no LLM, nothing that can hallucinate or OOM. It
    only *reads* heartbeat paths — it can never reset its own timer.
 3. **A ladder, not a guillotine.** 30 days silent → an `ALERT` file and your
-   notify hook fire (stage 1). 37 days → the contact stage: your emergency
-   note is prepared as a draft for delivery (stage 2).
+   delivery channels fire (stage 1). 37 days → the contact stage: your
+   emergency note is prepared as a draft and delivered again (stage 2).
 4. **Self-healing.** Come back on day 33 and use your agent like normal — the
    next check recovers the switch automatically. `alive` is there for the
    "I'm about to be quiet on purpose" moments.
@@ -66,14 +66,16 @@ Then:
 
 1. `~/.config/ghosted/config` — point `HEARTBEAT_PATHS` at something you touch
    daily (DSH, Claude Code, ollama, any session dir — see the examples inside).
-2. `~/.ghosted/note.md` — fill in the emergency note your contact will receive.
-3. `ghosted status` — see where you stand:
+2. `ghosted setup` — pick who hears about it and how: email someone, push to
+   your phone, a webhook, or hand off to **another agent**.
+3. `~/.ghosted/note.md` — fill in the emergency note your contact will receive.
+4. `ghosted status` — see where you stand:
 
 ```
-ghosted 0.1.0
+ghosted 0.2.0
   state dir     : /home/grant/.ghosted
   heartbeats    : /home/grant/.dsh/sessions
-  notify hook   : not wired (local-only; see notify.sh.example)
+  channels      : ntfy email
   last activity : 2026-10-11T07:43:02+00:00  (0d ago)
   stage         : 0  (stage 1 @ 30d, stage 2 @ 37d)
   next trip     : in 30d of silence
@@ -84,25 +86,43 @@ ghosted 0.1.0
 | Silence | Stage | What happens |
 |---------|-------|--------------|
 | < 30 d  | 0     | Nothing. Normal use keeps everything green and heals earlier alerts. |
-| ≥ 30 d  | 1     | `~/.ghosted/ALERT` written, notify hook fires. You get a grace window to `alive`. |
-| ≥ 37 d  | 2     | `note.md` becomes `CONTACT-DRAFT.md`, notify hook fires with the contact stage. |
+| ≥ 30 d  | 1     | `~/.ghosted/ALERT` written, delivery channels fire. You get a grace window to `alive`. |
+| ≥ 37 d  | 2     | `note.md` becomes `CONTACT-DRAFT.md`, delivery channels fire with the contact stage. |
 
 Thresholds are config (`GRACE_AFTER`, `CONTACT_AFTER`). Stages fire **once**
 each — no nag spam.
 
-## Delivery is a hook, not a dependency
+## Delivery: pick your people and your pipes
 
-Out of the box ghosted is **local-only**: alerts are files, which is honest —
-it won't pretend to reach your phone before you've configured anything. Wire
-up delivery by copying `examples/notify.sh.example` to `~/.ghosted/notify.sh`
-and `chmod +x`:
+`ghosted setup` is a 30-second wizard: choose who hears about it and how. Or
+set `CHANNELS` in the config by hand. Out of the box nothing is enabled —
+alerts are local files, which is honest.
+
+| Channel | Reaches | Needs |
+|---------|---------|-------|
+| `ntfy` | your phone/desktop, instantly | nothing (free [ntfy.sh](https://ntfy.sh), no account) |
+| `email` | your emergency contact | `msmtp` + an SMTP login |
+| `webhook` | Slack / Discord / anything with a URL | a URL |
+| `agent` | **another AI agent** — same box or across the world | any CLI that reads stdin |
+
+Channels are just scripts in `~/.ghosted/channels/`. Each one gets
+`stage age last alert-file` as arguments and runs once per stage transition.
+Want Telegram, Signal, carrier pigeon? Drop `pigeon.sh` in there, add
+`pigeon` to `CHANNELS`, done.
+
+### The agent channel
+
+The bit nobody else has: point the switch at a *second* agent. ghosted pipes
+a witness prompt — the alert, your emergency-note draft, and strict
+compose-only rules — into any command's stdin:
 
 ```sh
-# ntfy.sh push — free, no account, one curl
-curl -fsS -H "Title: ghosted (stage $1)" -d "$msg" https://ntfy.sh/YOUR-SECRET-TOPIC
-# or email
-msmtp -a contact "$(cat ~/.ghosted/contact.txt)" <"$4"
+AGENT_CMD="claude -p"                            # another local agent
+AGENT_CMD="ssh witness@home-pi witness-agent"    # an agent on another box
 ```
+
+The receiving agent drafts the message your contact should get — it never
+sends, never resets. Dumb shell decides; agents compose.
 
 ## The agent as witness
 
@@ -150,8 +170,8 @@ back to printing a cron line when systemd isn't around.)
 ## Development
 
 ```sh
-bash tests/test.sh    # full ladder: fresh → stage 1 → stage 2 → recovery → ack
-shellcheck bin/ghosted install.sh tests/test.sh examples/notify.sh.example
+bash tests/test.sh    # full ladder: fresh → stage 1 → stage 2 → recovery → ack → channels
+shellcheck bin/ghosted install.sh tests/test.sh examples/notify.sh.example channels/*.sh
 ```
 
 Requires Linux with GNU coreutils (it's a systemd-timer citizen anyway).

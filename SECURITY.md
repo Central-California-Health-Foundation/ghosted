@@ -11,10 +11,12 @@ serious consequences. Use a purpose-built service for that.
 
 - Everything runs as **you**, at your privilege level. The watchdog only reads
   the paths you configure and writes inside `~/.ghosted`.
-- `~/.ghosted/notify.sh` is **arbitrary code you chose to run** — treat it
-  like a shell profile. If you wire it to email or push services, those
-  credentials live on the same machine that may well be offline when the
-  alert matters most.
+- Delivery channels (`~/.ghosted/channels/*.sh`) are **arbitrary code you
+  chose to run** — treat them like a shell profile. The `agent` channel is
+  explicit about it: `AGENT_CMD` is a shell command ghosted pipes the alert
+  into, on whatever machine that command reaches. If you wire channels to
+  email or push services, those credentials live on the same machine that
+  may well be offline when the alert matters most.
 - If you use an ntfy topic for delivery, the topic name **is** the secret:
   anyone who knows it can read (and post to) that topic. Pick something long
   and unguessable; don't reuse a cute name.

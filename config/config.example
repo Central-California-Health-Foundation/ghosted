@@ -14,11 +14,24 @@
 HEARTBEAT_PATHS="$HOME/.dsh/sessions"
 
 # Escalation ladder, in days of silence.
-GRACE_AFTER=30     # stage 1: alert YOU (ALERT file + notify hook)
+GRACE_AFTER=30     # stage 1: alert YOU (ALERT file + delivery channels)
 CONTACT_AFTER=37   # stage 2: prepare the emergency-contact message
+
+# Delivery channels — run `ghosted setup` to configure interactively, or set
+# here. Any space-separated subset of: ntfy email webhook agent
+# (custom channels: drop <name>.sh into ~/.ghosted/channels/ and list <name>.)
+#
+# CHANNELS="ntfy email"
+#
+# NTFY_TOPIC="correct-horse-battery-staple-random"  # topic name or full https:// URL
+# EMAIL_TO="someone@example.com"                    # needs msmtp (~/.msmtprc)
+# MSMTP_ACCOUNT="default"
+# WEBHOOK_URL="https://hooks.example.com/..."       # JSON POST: stage/age/text
+# AGENT_CMD="claude -p"                             # any command reading a prompt on stdin
 
 # Paths (defaults shown; set via environment if you move GHOSTED_DIR).
 #GHOSTED_DIR="$HOME/.ghosted"
 #NOTE="$HOME/.ghosted/note.md"
 #CONTACT_FILE="$HOME/.ghosted/contact.txt"
-#NOTIFY="$HOME/.ghosted/notify.sh"
+#NOTIFY="$HOME/.ghosted/notify.sh"   # legacy v0.1 single hook, still honored
+#CHANNELS_DIR="$HOME/.ghosted/channels"

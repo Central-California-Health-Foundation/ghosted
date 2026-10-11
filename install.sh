@@ -30,6 +30,13 @@ mkdir -p "$HOME/.ghosted"
 [ -f "$HOME/.ghosted/notify.sh.example" ] ||
   install -m644 "$SRC/examples/notify.sh.example" "$HOME/.ghosted/notify.sh.example"
 
+# Built-in delivery channels (never overwrite user edits).
+mkdir -p "$HOME/.ghosted/channels"
+for c in "$SRC"/channels/*.sh; do
+  d="$HOME/.ghosted/channels/$(basename "$c")"
+  [ -f "$d" ] || install -m755 "$c" "$d"
+done
+
 if command -v systemctl >/dev/null 2>&1 &&
   systemctl --user show -p State >/dev/null 2>&1; then
   mkdir -p "$UNIT_DIR"
@@ -47,6 +54,7 @@ fi
 echo ""
 echo "ghosted installed. Next steps:"
 echo "  1. edit ~/.config/ghosted/config   (point HEARTBEAT_PATHS at your agent's dirs)"
-echo "  2. edit ~/.ghosted/note.md         (what your contact should know/do)"
-echo "  3. ghosted status                  (see the current state)"
+echo "  2. ghosted setup                   (pick delivery: email, push, webhook, another agent)"
+echo "  3. edit ~/.ghosted/note.md         (what your contact should know/do)"
+echo "  4. ghosted status                  (see the current state)"
 command -v alive >/dev/null 2>&1 || echo "  (put $PREFIX/bin on PATH for the 'alive' shortcut)"

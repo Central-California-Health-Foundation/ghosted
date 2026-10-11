@@ -6,9 +6,13 @@
 #
 #   heartbeat : newest mtime under HEARTBEAT_PATHS (any use of your tools),
 #               or $GHOSTED_DIR/heartbeat from `ghosted ack`, whichever is newer
-#   ladder    : age >= GRACE_AFTER   -> stage 1: alert you    (ALERT + notify hook)
-#               age >= CONTACT_AFTER -> stage 2: contact stage (draft + notify hook)
+#   ladder    : age >= GRACE_AFTER   -> stage 1: alert you    (ALERT + channels)
+#               age >= CONTACT_AFTER -> stage 2: contact stage (draft + channels)
 #               age <  GRACE_AFTER   -> auto-recover (normal use heals the switch)
+#
+# Delivery is a channel system: ntfy push, email, webhook, or another AI
+# agent — pick with `ghosted setup`, or drop your own script into
+# $GHOSTED_DIR/channels/ and list it in CHANNELS.
 #
 # Design rules:
 #   1. The decision lives in dumb shell. An AI agent is only ever asked to
@@ -18,20 +22,29 @@
 #   3. The ladder is staged, not a guillotine: you get a grace window to ack.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 CONFIG_FILE="${GHOSTED_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/ghosted/config}"
+set -a # export config vars so delivery channels inherit them
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+set +a
 
 # Precedence: config file > environment > built-in defaults.
 GHOSTED_DIR="${GHOSTED_DIR:-$HOME/.ghosted}"
 GRACE_AFTER="${GRACE_AFTER:-30}"
 CONTACT_AFTER="${CONTACT_AFTER:-37}"
 HEARTBEAT_PATHS="${HEARTBEAT_PATHS:-}"   # space-separated dirs (no spaces in paths)
+CHANNELS="${CHANNELS:-}"                 # space-separated: ntfy email webhook agent ...
 NOTE="${NOTE:-$GHOSTED_DIR/note.md}"
 CONTACT_FILE="${CONTACT_FILE:-$GHOSTED_DIR/contact.txt}"
-NOTIFY="${NOTIFY:-$GHOSTED_DIR/notify.sh}"
+NOTIFY="${NOTIFY:-$GHOSTED_DIR/notify.sh}" # legacy v0.1 single hook, still honored
+CHANNELS_DIR="${CHANNELS_DIR:-$GHOSTED_DIR/channels}"
+export GHOSTED_DIR CHANNELS_DIR NOTE CONTACT_FILE
+
+# Channels shipped in the repo, so a clone works without install.sh.
+SELF_DIR=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO_CHANNELS="${REPO_CHANNELS:-${SELF_DIR%/*}/channels}"
 
 log() { printf '%s %s\n' "$(date -Is)" "$*" >>"$GHOSTED_DIR/alert.log"; }
 
@@ -67,15 +80,38 @@ write_alert() { # $1=stage $2=last_iso $3=age_days
       echo "CONTACT STAGE. No activity for $3 days."
       echo "The emergency note ($NOTE) is due to go to $CONTACT_FILE."
       echo "An AI agent may help finalize the draft on the user's next session;"
-      echo "delivery is wired via $NOTIFY."
+      echo "delivery runs the configured channels (see: ghosted setup)."
     fi
   } >"$GHOSTED_DIR/ALERT"
 }
 
 notify() { # passthrough: stage age_days last_iso alert_file
+  local ran=0 ch script
+  # shellcheck disable=SC2086  # word-splitting is the config format
+  for ch in $CHANNELS; do
+    script=""
+    if [ -x "$CHANNELS_DIR/$ch.sh" ]; then
+      script="$CHANNELS_DIR/$ch.sh"
+    elif [ -x "$REPO_CHANNELS/$ch.sh" ]; then
+      script="$REPO_CHANNELS/$ch.sh"
+    fi
+    if [ -z "$script" ]; then
+      log "WARN channel=$ch enabled but no $ch.sh in $CHANNELS_DIR (run ./install.sh or ghosted setup)"
+      continue
+    fi
+    if "$script" "$@"; then
+      log "NOTIFY channel=$ch ok"
+    else
+      log "WARN channel=$ch failed (exit $?)"
+    fi
+    ran=1
+  done
+  # v0.1 backward compatibility: a single notify.sh hook still runs.
   if [ -x "$NOTIFY" ]; then
-    "$NOTIFY" "$@" || log "WARN notify hook failed (exit $?)"
+    "$NOTIFY" "$@" || log "WARN notify.sh hook failed (exit $?)"
+    ran=1
   fi
+  [ "$ran" -eq 1 ] || log "NOTE no delivery configured (local-only); run: ghosted setup"
 }
 
 cmd_check() {
@@ -129,10 +165,12 @@ cmd_status() {
   echo "ghosted $VERSION"
   echo "  state dir     : $GHOSTED_DIR"
   echo "  heartbeats    : ${HEARTBEAT_PATHS:-<none configured — set HEARTBEAT_PATHS in $CONFIG_FILE>}"
-  if [ -x "$NOTIFY" ]; then
-    echo "  notify hook   : wired ($NOTIFY)"
+  if [ -n "${CHANNELS// /}" ]; then
+    echo "  channels      :$CHANNELS"
+  elif [ -x "$NOTIFY" ]; then
+    echo "  channels      : legacy notify.sh hook ($NOTIFY)"
   else
-    echo "  notify hook   : not wired (local-only; see notify.sh.example)"
+    echo "  channels      : none — local files only (run: ghosted setup)"
   fi
   if [ "$last" -eq 0 ]; then
     echo "  last activity : never"
@@ -155,6 +193,86 @@ cmd_status() {
   fi
 }
 
+cmd_setup() {
+  local target="$CONFIG_FILE"
+  local begin="# >>> ghosted delivery (managed by 'ghosted setup') >>>"
+  local end="# <<< ghosted delivery <<<"
+  local sel chans="" block="" v ans tmp
+
+  echo "ghosted setup — who should hear about it, and how?"
+  echo ""
+  echo "  1) ntfy     push to your phone/desktop (free, no account)"
+  echo "  2) email    write to your emergency contact (needs msmtp)"
+  echo "  3) webhook  JSON POST (Slack/Discord/anything that takes curl)"
+  echo "  4) agent    hand the alert to another AI agent (any CLI, any box)"
+  echo "  5) none     keep alerts as local files only"
+  printf "\nenable which? (space-separated, e.g. '1 2') [5]: "
+  IFS= read -r sel || sel=""
+  sel="${sel:-5}"
+
+  case " $sel " in *" 1 "*)
+    printf "  ntfy topic (long random words, or full https:// URL): "
+    IFS= read -r v || v=""
+    chans="$chans ntfy"; block="${block}NTFY_TOPIC=\"${v}\"\n" ;;
+  esac
+  case " $sel " in *" 2 "*)
+    printf "  contact email (comma-separated for several): "
+    IFS= read -r v || v=""
+    chans="$chans email"; block="${block}EMAIL_TO=\"${v}\"\n" ;;
+  esac
+  case " $sel " in *" 3 "*)
+    printf "  webhook URL: "
+    IFS= read -r v || v=""
+    chans="$chans webhook"; block="${block}WEBHOOK_URL=\"${v}\"\n" ;;
+  esac
+  case " $sel " in *" 4 "*)
+    printf "  agent command (reads a witness prompt on stdin, e.g. 'claude -p'): "
+    IFS= read -r v || v=""
+    chans="$chans agent"; block="${block}AGENT_CMD=\"${v//\"/\\\"}\"\n" ;;
+  esac
+  chans="${chans# }"
+
+  mkdir -p "$GHOSTED_DIR" "$(dirname "$target")"
+  touch "$target"
+  tmp="$(mktemp "$GHOSTED_DIR/.setup.tmp.XXXXXX")" # keep temp in state dir, not $TMPDIR
+  awk -v b="$begin" -v e="$end" '
+    index($0, b) == 1 { skip = 1; next }
+    index($0, e) == 1 { skip = 0; next }
+    !skip { print }
+  ' "$target" >"$tmp"
+  {
+    cat "$tmp"
+    echo ""
+    echo "$begin"
+    echo "CHANNELS=\"$chans\""
+    printf '%b' "$block"
+    echo "$end"
+  } >"$target"
+  rm -f "$tmp"
+  echo "saved channels [${chans:-none}] to $target"
+
+  # Re-source so the test alert below uses the new settings.
+  set -a
+  # shellcheck source=/dev/null
+  [ -f "$target" ] && . "$target"
+  set +a
+
+  if [ -n "$chans" ]; then
+    printf "send a test alert through them now? [Y/n]: "
+    IFS= read -r ans || ans=""
+    case "$ans" in
+      [nN]*) ;;
+      *)
+        mkdir -p "$GHOSTED_DIR"
+        local tf="$GHOSTED_DIR/TEST-ALERT"
+        echo "ghosted TEST alert — if you can read this, delivery works." >"$tf"
+        notify setup-test 0 "$(date -Is)" "$tf"
+        echo "per-channel results: $GHOSTED_DIR/alert.log"
+        ;;
+    esac
+  fi
+}
+
 usage() {
   cat <<EOF
 ghosted $VERSION — a dead man's switch for the AI era
@@ -164,7 +282,8 @@ usage: ghosted <command>
   check    evaluate the heartbeat and advance the escalation ladder
            (what the systemd timer runs; safe to run by hand)
   ack      acknowledge you're alive: reset the clock, clear alerts
-  status   show stage, last activity, and recent log
+  status   show stage, last activity, channels, and recent log
+  setup    interactive wizard: pick delivery — email, push, webhook, agent
   help     this message
 
 Invoked as 'alive', it runs 'ack'.   Config: $CONFIG_FILE
@@ -184,6 +303,7 @@ main() {
     check) cmd_check ;;
     ack) cmd_ack ;;
     status) cmd_status ;;
+    setup) cmd_setup ;;
     --version) echo "ghosted $VERSION" ;;
     help | -h | --help) usage ;;
     *)
