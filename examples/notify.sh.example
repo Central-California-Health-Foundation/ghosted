@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Delivery hook for ghosted. Copy to ~/.ghosted/notify.sh, chmod +x, done.
+# Called by `ghosted check` as:  notify.sh <stage> <age_days> <last_iso> <alert_file>
+set -euo pipefail
+# shellcheck disable=SC2034  # consumed by the delivery examples below
+stage="$1" age="$2" last="$3" alert="$4"
+
+# Default: just record that delivery isn't wired up yet.
+echo "$(date -Is) would notify stage=$stage age=${age}d last=$last" >>"$HOME/.ghosted/notify.log"
+
+# --- ntfy.sh push — uncomment, pick a long unguessable topic name -----------
+# msg=$(head -n3 "$alert" | tr '\n' ' ')
+# curl -fsS -o /dev/null -H "Title: ghosted (stage $stage)" \
+#      -d "$msg" "https://ntfy.sh/CHANGE-ME-long-random-topic"
+
+# --- email via msmtp (install msmtp, configure ~/.msmtprc) -------------------
+# msmtp -a contact "$(cat "$HOME/.ghosted/contact.txt")" <"$alert"

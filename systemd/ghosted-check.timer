@@ -1,0 +1,10 @@
+[Unit]
+Description=ghosted — daily dead man's switch check
+
+[Timer]
+OnCalendar=*-*-* 09:30:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

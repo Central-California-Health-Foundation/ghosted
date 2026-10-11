@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# ghosted — a dead man's switch for the AI era.
+#
+# You talk to your local agent every day. If you stop showing up, something is
+# wrong — and nothing on your machine would notice. ghosted notices.
+#
+#   heartbeat : newest mtime under HEARTBEAT_PATHS (any use of your tools),
+#               or $GHOSTED_DIR/heartbeat from `ghosted ack`, whichever is newer
+#   ladder    : age >= GRACE_AFTER   -> stage 1: alert you    (ALERT + notify hook)
+#               age >= CONTACT_AFTER -> stage 2: contact stage (draft + notify hook)
+#               age <  GRACE_AFTER   -> auto-recover (normal use heals the switch)
+#
+# Design rules:
+#   1. The decision lives in dumb shell. An AI agent is only ever asked to
+#      *compose* the contact message, never to decide whether it fires
+#      (see docs/agent-witness.md).
+#   2. The watchdog only READS heartbeat paths — it can never reset its own timer.
+#   3. The ladder is staged, not a guillotine: you get a grace window to ack.
+set -euo pipefail
+
+VERSION="0.1.0"
+
+CONFIG_FILE="${GHOSTED_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/ghosted/config}"
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+# Precedence: config file > environment > built-in defaults.
+GHOSTED_DIR="${GHOSTED_DIR:-$HOME/.ghosted}"
+GRACE_AFTER="${GRACE_AFTER:-30}"
+CONTACT_AFTER="${CONTACT_AFTER:-37}"
+HEARTBEAT_PATHS="${HEARTBEAT_PATHS:-}"   # space-separated dirs (no spaces in paths)
+NOTE="${NOTE:-$GHOSTED_DIR/note.md}"
+CONTACT_FILE="${CONTACT_FILE:-$GHOSTED_DIR/contact.txt}"
+NOTIFY="${NOTIFY:-$GHOSTED_DIR/notify.sh}"
+
+log() { printf '%s %s\n' "$(date -Is)" "$*" >>"$GHOSTED_DIR/alert.log"; }
+
+newest_mtime() { # newest mtime (epoch seconds) under a dir; empty if none
+  find "$1" -mindepth 1 -printf '%T@\n' 2>/dev/null |
+    cut -d. -f1 | sort -nr | head -n1 || true
+}
+
+last_activity() { # epoch seconds of newest heartbeat, 0 if none
+  local newest=0 n p hb
+  # shellcheck disable=SC2086  # word-splitting is the config format
+  for p in $HEARTBEAT_PATHS; do
+    [ -d "$p" ] || continue
+    n="$(newest_mtime "$p")"; n="${n:-0}"
+    newest=$(( n > newest ? n : newest ))
+  done
+  hb="$(stat -c %Y "$GHOSTED_DIR/heartbeat" 2>/dev/null || echo 0)"
+  echo $(( hb > newest ? hb : newest ))
+}
+
+write_alert() { # $1=stage $2=last_iso $3=age_days
+  {
+    echo "ghosted — DEAD MAN'S SWITCH, stage $1"
+    echo "  tripped:       $(date -Is)"
+    echo "  last activity: $2  ($3 days ago)"
+    echo ""
+    if [ "$1" -eq 1 ]; then
+      echo "You haven't touched your tools in $3 days."
+      echo "If you're fine: run 'alive' (or just use your agent) to clear this."
+      echo "If silence continues $(( CONTACT_AFTER - GRACE_AFTER )) more days, the contact-stage"
+      echo "message in $GHOSTED_DIR gets prepared for delivery."
+    else
+      echo "CONTACT STAGE. No activity for $3 days."
+      echo "The emergency note ($NOTE) is due to go to $CONTACT_FILE."
+      echo "An AI agent may help finalize the draft on the user's next session;"
+      echo "delivery is wired via $NOTIFY."
+    fi
+  } >"$GHOSTED_DIR/ALERT"
+}
+
+notify() { # passthrough: stage age_days last_iso alert_file
+  if [ -x "$NOTIFY" ]; then
+    "$NOTIFY" "$@" || log "WARN notify hook failed (exit $?)"
+  fi
+}
+
+cmd_check() {
+  mkdir -p "$GHOSTED_DIR"
+  local now last age last_iso stage
+  now=$(date +%s)
+  last=$(last_activity)
+
+  if [ "$last" -eq 0 ]; then
+    touch "$GHOSTED_DIR/heartbeat"
+    log "INIT no heartbeat source found; initialized heartbeat to now (set HEARTBEAT_PATHS in $CONFIG_FILE)"
+    return 0
+  fi
+
+  age=$(( (now - last) / 86400 ))
+  last_iso=$(date -d "@$last" -Is)
+  stage=$(cat "$GHOSTED_DIR/stage" 2>/dev/null || echo 0)
+
+  if [ "$age" -ge "$CONTACT_AFTER" ] && [ "$stage" -lt 2 ]; then
+    echo 2 >"$GHOSTED_DIR/stage"
+    write_alert 2 "$last_iso" "$age"
+    if [ -f "$NOTE" ]; then cp "$NOTE" "$GHOSTED_DIR/CONTACT-DRAFT.md"; fi
+    log "STAGE2 contact stage: ${age}d silent (last: $last_iso)"
+    notify 2 "$age" "$last_iso" "$GHOSTED_DIR/ALERT"
+  elif [ "$age" -ge "$GRACE_AFTER" ] && [ "$stage" -lt 1 ]; then
+    echo 1 >"$GHOSTED_DIR/stage"
+    write_alert 1 "$last_iso" "$age"
+    log "STAGE1 grace alert: ${age}d silent (last: $last_iso)"
+    notify 1 "$age" "$last_iso" "$GHOSTED_DIR/ALERT"
+  elif [ "$age" -lt "$GRACE_AFTER" ] && [ "$stage" -gt 0 ]; then
+    echo 0 >"$GHOSTED_DIR/stage"
+    rm -f "$GHOSTED_DIR/ALERT" "$GHOSTED_DIR/CONTACT-DRAFT.md"
+    log "RECOVERED activity resumed (${age}d); stage $stage -> 0"
+  fi
+  log "OK check: age=${age}d stage=$(cat "$GHOSTED_DIR/stage" 2>/dev/null || echo 0)"
+}
+
+cmd_ack() {
+  mkdir -p "$GHOSTED_DIR"
+  touch "$GHOSTED_DIR/heartbeat"
+  echo 0 >"$GHOSTED_DIR/stage"
+  rm -f "$GHOSTED_DIR/ALERT" "$GHOSTED_DIR/CONTACT-DRAFT.md"
+  echo "ghosted: heartbeat acknowledged $(date -Is). Clock reset."
+}
+
+cmd_status() {
+  mkdir -p "$GHOSTED_DIR"
+  local last age stage
+  last=$(last_activity)
+  stage=$(cat "$GHOSTED_DIR/stage" 2>/dev/null || echo 0)
+  echo "ghosted $VERSION"
+  echo "  state dir     : $GHOSTED_DIR"
+  echo "  heartbeats    : ${HEARTBEAT_PATHS:-<none configured — set HEARTBEAT_PATHS in $CONFIG_FILE>}"
+  if [ -x "$NOTIFY" ]; then
+    echo "  notify hook   : wired ($NOTIFY)"
+  else
+    echo "  notify hook   : not wired (local-only; see notify.sh.example)"
+  fi
+  if [ "$last" -eq 0 ]; then
+    echo "  last activity : never"
+    return 0
+  fi
+  age=$(( ($(date +%s) - last) / 86400 ))
+  echo "  last activity : $(date -d "@$last" -Is)  (${age}d ago)"
+  echo "  stage         : $stage  (stage 1 @ ${GRACE_AFTER}d, stage 2 @ ${CONTACT_AFTER}d)"
+  if [ "$age" -lt "$GRACE_AFTER" ]; then
+    echo "  next trip     : in $(( GRACE_AFTER - age ))d of silence"
+  fi
+  if [ -f "$GHOSTED_DIR/ALERT" ]; then
+    echo ""
+    echo "  --- ALERT ---"
+    sed 's/^/  /' "$GHOSTED_DIR/ALERT"
+  fi
+  if [ -f "$GHOSTED_DIR/alert.log" ]; then
+    echo "  recent log:"
+    tail -n 3 "$GHOSTED_DIR/alert.log" | sed 's/^/    /'
+  fi
+}
+
+usage() {
+  cat <<EOF
+ghosted $VERSION — a dead man's switch for the AI era
+
+usage: ghosted <command>
+
+  check    evaluate the heartbeat and advance the escalation ladder
+           (what the systemd timer runs; safe to run by hand)
+  ack      acknowledge you're alive: reset the clock, clear alerts
+  status   show stage, last activity, and recent log
+  help     this message
+
+Invoked as 'alive', it runs 'ack'.   Config: $CONFIG_FILE
+Docs:  https://github.com/Central-California-Health-Foundation/ghosted
+EOF
+}
+
+main() {
+  local invoked_as cmd="${1:-}"
+  invoked_as=$(basename "$0")
+  if [ "$invoked_as" = alive ]; then
+    case "$cmd" in status | help | --help) ;; *) cmd=ack ;; esac
+  elif [ -z "$cmd" ]; then
+    cmd=check
+  fi
+  case "$cmd" in
+    check) cmd_check ;;
+    ack) cmd_ack ;;
+    status) cmd_status ;;
+    --version) echo "ghosted $VERSION" ;;
+    help | -h | --help) usage ;;
+    *)
+      echo "ghosted: unknown command '$cmd'" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+main "$@"

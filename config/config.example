@@ -1,0 +1,24 @@
+# ghosted config — a plain shell file sourced by bin/ghosted.
+# Precedence: this file > environment variables > built-in defaults.
+
+# Directories whose file activity proves you're alive. Any ordinary use of
+# these tools bumps mtimes; ghosted only ever READS them. Space-separated
+# (paths with spaces aren't supported). Point this at something you touch
+# daily — your agent's session store is the obvious choice:
+#
+#   HEARTBEAT_PATHS="$HOME/.dsh/sessions"        # DSH agent sessions
+#   HEARTBEAT_PATHS="$HOME/.claude"              # Claude Code
+#   HEARTBEAT_PATHS="$HOME/.config/llama.cpp"    # llama.cpp
+#   HEARTBEAT_PATHS="$HOME/.local/share/ollama"  # ollama
+#
+HEARTBEAT_PATHS="$HOME/.dsh/sessions"
+
+# Escalation ladder, in days of silence.
+GRACE_AFTER=30     # stage 1: alert YOU (ALERT file + notify hook)
+CONTACT_AFTER=37   # stage 2: prepare the emergency-contact message
+
+# Paths (defaults shown; set via environment if you move GHOSTED_DIR).
+#GHOSTED_DIR="$HOME/.ghosted"
+#NOTE="$HOME/.ghosted/note.md"
+#CONTACT_FILE="$HOME/.ghosted/contact.txt"
+#NOTIFY="$HOME/.ghosted/notify.sh"

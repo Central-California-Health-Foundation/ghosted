@@ -1,0 +1,8 @@
+[Unit]
+Description=ghosted — dead man's switch daily check
+Documentation=https://github.com/Central-California-Health-Foundation/ghosted
+
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/ghosted check
+Nice=19
